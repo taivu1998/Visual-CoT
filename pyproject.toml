@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "v-cot"
+version = "0.1.0"
+description = "Visual Chain-of-Thought: Grounding Reasoning in Vision-Language Models"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "V-CoT Research Team"}
+]
+keywords = ["vlm", "multimodal", "reasoning", "chain-of-thought", "grounding"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=2.0.0",
+    "transformers>=4.45.0",
+    "datasets",
+    "accelerate",
+    "peft",
+    "trl",
+    "pyyaml",
+    "tqdm",
+    "pillow",
+    "opencv-python",
+    "numpy<2.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "black", "ruff"]
+demo = ["gradio>=4.0.0"]
+data = ["openai>=1.0.0"]
+
+[project.urls]
+Homepage = "https://github.com/your-org/v-cot"
+Documentation = "https://github.com/your-org/v-cot#readme"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*", "scripts*", "app*", "configs*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+
+[tool.black]
+line-length = 120
+target-version = ["py38", "py39", "py310", "py311"]

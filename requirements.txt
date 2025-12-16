@@ -1,0 +1,34 @@
+# Core ML
+numpy<2.0.0
+torch>=2.0.0
+torchvision
+
+# LLM & VLM Frameworks
+# Note: Unsloth requires Python 3.10+ and CUDA. Install separately:
+#   pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+# Or use PyPI version: pip install unsloth
+transformers>=4.40.0
+datasets
+accelerate
+bitsandbytes
+peft
+trl>=0.9.0
+
+# Utilities
+pyyaml
+tqdm
+scipy
+wandb
+openai>=1.0.0
+
+# Demo / Computer Vision
+gradio>=4.0.0
+opencv-python
+pillow
+matplotlib
+
+# Qwen VLM Utils (for proper vision processing)
+qwen-vl-utils
+
+# Retry/resilience
+tenacity
