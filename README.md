@@ -1,4 +1,4 @@
-# V-CoT: Pixel-Grounded Reasoning with Interleaved Visual Chain-of-Thought
+# Visual-CoT: Pixel-Grounded Reasoning with Interleaved Visual Chain-of-Thought
 
 <div align="center">
 
