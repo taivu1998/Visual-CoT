@@ -35,6 +35,7 @@ env/
 
 # Jupyter
 .ipynb_checkpoints/
+*.ipynb
 
 # Project specific
 data/
