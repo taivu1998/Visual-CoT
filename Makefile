@@ -1,4 +1,4 @@
-.PHONY: install install-dev clean train demo generate eval test lint help
+.PHONY: install install-dev clean train demo generate generate-scienceqa generate-small eval test lint help validate-data verify
 
 PYTHON = python
 PIP = pip
@@ -10,11 +10,13 @@ help:
 	@echo "Available targets:"
 	@echo "  install      - Install production dependencies"
 	@echo "  install-dev  - Install with development dependencies"
-	@echo "  generate     - Generate training data using GPT-4o"
+	@echo "  generate     - Generate canonical VisCOT training data"
+	@echo "  generate-scienceqa - Generate ScienceQA data using GPT-4o"
 	@echo "  train        - Train the model"
 	@echo "  eval         - Evaluate model on validation set"
 	@echo "  demo         - Launch Gradio demo"
 	@echo "  demo-base    - Launch demo with base model (no training required)"
+	@echo "  validate-data - Validate processed JSONL files"
 	@echo "  test         - Run syntax checks"
 	@echo "  clean        - Remove generated files"
 	@echo ""
@@ -40,12 +42,20 @@ install-dev: install
 # Data generation
 generate:
 	@echo "Generating training data..."
+	$(PYTHON) scripts/generate_data.py \
+		--source viscot \
+		--output_dir data/processed \
+		--max_samples 2000
+
+generate-scienceqa:
+	@echo "Generating ScienceQA training data..."
 	@if [ -z "$$OPENAI_API_KEY" ]; then \
 		echo "ERROR: OPENAI_API_KEY not set"; \
 		echo "Run: export OPENAI_API_KEY='sk-...'"; \
 		exit 1; \
 	fi
 	$(PYTHON) scripts/generate_data.py \
+		--source scienceqa \
 		--output_dir data/processed \
 		--max_samples 2000 \
 		--save_images
@@ -53,9 +63,9 @@ generate:
 generate-small:
 	@echo "Generating small dataset (100 samples) for testing..."
 	$(PYTHON) scripts/generate_data.py \
+		--source viscot \
 		--output_dir data/processed \
-		--max_samples 100 \
-		--save_images
+		--max_samples 100
 
 # Training
 train:
@@ -65,16 +75,22 @@ train:
 train-debug:
 	@echo "Starting debug training run (10 steps)..."
 	$(PYTHON) scripts/train.py --config configs/default.yaml \
+		--mode text_only_debug \
 		--training.max_steps 10 \
 		--training.logging_steps 1
 
 train-test:
 	@echo "Starting test training with sample data..."
-	$(PYTHON) scripts/train.py --config configs/test.yaml
+	$(PYTHON) scripts/train.py --config configs/test.yaml --mode text_only_debug
 
 verify:
 	@echo "Verifying V-CoT setup..."
 	$(PYTHON) scripts/verify_setup.py
+
+validate-data:
+	@echo "Validating processed datasets..."
+	@if [ -f data/processed/train.jsonl ]; then $(PYTHON) scripts/validate_data.py --input data/processed/train.jsonl; else echo "Skipping train.jsonl (not found)"; fi
+	@if [ -f data/processed/val.jsonl ]; then $(PYTHON) scripts/validate_data.py --input data/processed/val.jsonl; else echo "Skipping val.jsonl (not found)"; fi
 
 # Evaluation
 eval:
@@ -82,7 +98,7 @@ eval:
 	$(PYTHON) scripts/inference.py \
 		--model_path outputs/checkpoints \
 		--eval_jsonl data/processed/val.jsonl \
-		--output_json outputs/eval_results.json
+		--output_json results/evaluation.json
 
 # Demo
 demo:

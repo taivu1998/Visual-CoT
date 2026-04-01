@@ -7,10 +7,10 @@ This script supports two data sources:
 
 Usage:
     # Use VisCOT dataset (recommended - 150K samples with real bboxes)
-    python scripts/generate_data.py --source viscot --output_dir data --max_samples 150000
+    python scripts/generate_data.py --source viscot --output_dir data/processed --max_samples 150000
 
     # Use ScienceQA with GPT-4o distillation
-    python scripts/generate_data.py --source scienceqa --output_dir data --max_samples 2000
+    python scripts/generate_data.py --source scienceqa --output_dir data/processed --max_samples 2000 --save_images
 
 Environment Variables:
     OPENAI_API_KEY: Your OpenAI API key (only needed for scienceqa source)
@@ -22,6 +22,7 @@ import base64
 import asyncio
 import argparse
 import re
+import shutil
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from tqdm import tqdm
@@ -30,6 +31,7 @@ from tqdm.asyncio import tqdm_asyncio
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from datasets import load_dataset
+from src.data_schema import extract_refs_from_text
 
 # Full system prompt as specified in the project plan
 SYSTEM_PROMPT = """
@@ -165,14 +167,25 @@ def convert_viscot_sample(sample: Dict, bbox_format: str = "vcot", filter_qualit
     if filter_quality and not has_bbox:
         return None
 
+    answer_text = "".join(response_parts)
+    refs = extract_refs_from_text(answer_text)
     return {
-        "messages": [
-            {"role": "user", "content": [
-                {"type": "image", "image": image_path},
-                {"type": "text", "text": question}
-            ]},
-            {"role": "assistant", "content": "".join(response_parts)}
-        ],
+        "id": sample.get("id"),
+        "image": {
+            "path": image_path,
+            "width": None,
+            "height": None,
+        },
+        "task": {
+            "question": question,
+        },
+        "answer": {
+            "text": answer_text,
+            "boxes": [
+                {"label": label, "coords": coords, "normalized": True}
+                for label, coords in refs
+            ],
+        },
         "metadata": {
             "source": "viscot",
             "dataset": sample.get('dataset', 'unknown'),
@@ -247,7 +260,7 @@ def analyze_converted_data(file_path: str) -> Dict:
 
             stats['total'] += 1
             sample = json.loads(line)
-            response = sample['messages'][1]['content']
+            response = sample['answer']['text']
 
             response_lengths.append(len(response))
 
@@ -281,7 +294,7 @@ def get_image_mime_type(image_path: str) -> str:
 
 
 async def process_single_image(
-    client: AsyncOpenAI,
+    client,
     image_data: bytes,
     question: str,
     answer: str,
@@ -330,7 +343,7 @@ Remember to annotate every object you mention with its bounding box."""
 
 
 async def process_batch(
-    client: AsyncOpenAI,
+    client,
     samples: List[Dict],
     semaphore: asyncio.Semaphore
 ) -> List[Dict]:
@@ -352,20 +365,24 @@ async def process_batch(
     processed = []
     for sample, response in zip(samples, results):
         if response:
+            refs = extract_refs_from_text(response)
             processed.append({
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image", "image": sample["image_path"]},
-                            {"type": "text", "text": sample["question"]}
-                        ]
-                    },
-                    {
-                        "role": "assistant",
-                        "content": response
-                    }
-                ],
+                "id": sample.get("id"),
+                "image": {
+                    "path": sample["image_path"],
+                    "width": sample.get("width"),
+                    "height": sample.get("height"),
+                },
+                "task": {
+                    "question": sample["question"],
+                },
+                "answer": {
+                    "text": response,
+                    "boxes": [
+                        {"label": label, "coords": coords, "normalized": True}
+                        for label, coords in refs
+                    ],
+                },
                 "metadata": {
                     "source": "scienceqa",
                     "original_answer": sample["answer"],
@@ -398,8 +415,10 @@ def load_scienceqa_images(max_samples: int = 2000, split: str = "train") -> List
             img_buffer = BytesIO()
             item["image"].save(img_buffer, format="PNG")
             img_bytes = img_buffer.getvalue()
+            width, height = item["image"].size
 
             samples.append({
+                "id": f"{split}_{len(samples):06d}",
                 "image_bytes": img_bytes,
                 "image_path": f"scienceqa_{len(samples)}.png",  # Placeholder path
                 "question": item.get("question", ""),
@@ -407,6 +426,8 @@ def load_scienceqa_images(max_samples: int = 2000, split: str = "train") -> List
                 "subject": item.get("subject", ""),
                 "topic": item.get("topic", ""),
                 "mime_type": "image/png",
+                "width": width,
+                "height": height,
             })
 
             if len(samples) >= max_samples:
@@ -418,7 +439,7 @@ def load_scienceqa_images(max_samples: int = 2000, split: str = "train") -> List
 
 def save_images_to_disk(samples: List[Dict], output_dir: Path) -> List[Dict]:
     """Save images to disk and update paths."""
-    images_dir = output_dir / "images"
+    images_dir = output_dir.parent / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
 
     updated_samples = []
@@ -430,15 +451,68 @@ def save_images_to_disk(samples: List[Dict], output_dir: Path) -> List[Dict]:
             f.write(sample["image_bytes"])
 
         sample_copy = sample.copy()
-        sample_copy["image_path"] = str(image_path)
+        sample_copy["image_path"] = os.path.relpath(image_path, Path.cwd())
         updated_samples.append(sample_copy)
 
     return updated_samples
 
 
+def materialize_local_canonical_images(
+    samples: List[Dict],
+    output_dir: Path,
+    source_name: str,
+    strict: bool = True,
+) -> List[Dict]:
+    """
+    Copy local image references into the canonical repo image store and rewrite
+    sample paths to portable relative locations.
+    """
+    images_dir = output_dir.parent / "images" / source_name
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    materialized = []
+    skipped = 0
+    for index, sample in enumerate(samples):
+        image_info = sample.get("image", {})
+        image_path = image_info.get("path")
+        sample_id = sample.get("id") or f"{source_name}_{index:06d}"
+
+        if not image_path:
+            if strict:
+                skipped += 1
+                continue
+            materialized.append(sample)
+            continue
+
+        source_path = Path(image_path)
+        if not source_path.exists():
+            if strict:
+                skipped += 1
+                continue
+            materialized.append(sample)
+            continue
+
+        suffix = source_path.suffix or ".png"
+        destination = images_dir / f"{sample_id}{suffix}"
+        shutil.copy2(source_path, destination)
+
+        sample_copy = json.loads(json.dumps(sample))
+        sample_copy["image"]["path"] = os.path.relpath(destination, Path.cwd())
+        materialized.append(sample_copy)
+
+    if strict and skipped:
+        print(f"Skipped {skipped} samples because their images could not be materialized into the canonical image store.")
+
+    return materialized
+
+
 async def main_scienceqa(args):
     """Generate data using ScienceQA + GPT-4o."""
     from openai import AsyncOpenAI
+
+    if not args.save_images:
+        print("ERROR: ScienceQA generation requires --save_images so canonical records reference portable image files.")
+        sys.exit(1)
 
     # Check for API key
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -496,6 +570,17 @@ def main_viscot(args):
         print("No samples converted! Check dataset availability.")
         sys.exit(1)
 
+    all_processed = materialize_local_canonical_images(
+        all_processed,
+        output_dir=Path(args.output_dir),
+        source_name="viscot",
+        strict=not args.allow_nonportable_images,
+    )
+
+    if not all_processed:
+        print("No portable VisCOT samples could be materialized. Re-run with --allow_nonportable_images to keep original paths.")
+        sys.exit(1)
+
     return all_processed
 
 
@@ -504,7 +589,7 @@ def main():
     parser.add_argument("--source", type=str, default="viscot",
                         choices=["viscot", "scienceqa"],
                         help="Data source: viscot (recommended) or scienceqa")
-    parser.add_argument("--output_dir", type=str, default="data",
+    parser.add_argument("--output_dir", type=str, default="data/processed",
                         help="Output directory for processed data")
     parser.add_argument("--max_samples", type=int, default=150000,
                         help="Maximum number of samples to process")
@@ -519,6 +604,8 @@ def main():
                         help="Only keep samples with valid bboxes (viscot source only)")
     parser.add_argument("--no_filter_quality", action="store_false", dest="filter_quality",
                         help="Keep all samples regardless of bbox validity")
+    parser.add_argument("--allow_nonportable_images", action="store_true",
+                        help="Keep original image paths when VisCOT images cannot be materialized locally")
 
     # ScienceQA-specific arguments
     parser.add_argument("--batch_size", type=int, default=50,

@@ -2,45 +2,47 @@
 Dataset Logic for Unsloth/Qwen.
 
 Handles loading and formatting data for vision-language model training.
-Includes optimized pre-tokenization approach for VLM processors.
+Includes canonical-schema adapters and multimodal/text-only preparation modes.
 """
 import json
 import os
-from typing import Dict, List, Any, Optional, Union
+from typing import Dict, List, Any, Optional
 from datasets import Dataset
 from PIL import Image
 from tqdm import tqdm
 
+from src.data_schema import (
+    canonical_to_messages,
+    load_jsonl_records,
+    resolve_image_path,
+    to_canonical_sample,
+    validate_canonical_sample,
+)
+
 
 def load_dataset_from_jsonl(file_path: str) -> Dataset:
     """
-    Loads JSONL data.
-
-    Format expected by Unsloth Qwen2.5:
-    {
-      "messages": [
-        {"role": "user", "content": [{"type": "image", "image": "..."}, {"type": "text", "text": "..."}]},
-        {"role": "assistant", "content": "Trace..."}
-      ]
-    }
+    Loads JSONL data into canonical message format.
     """
-    data = []
-    with open(file_path, 'r') as f:
-        for line in f:
-            if line.strip():
-                data.append(json.loads(line))
-
-    return Dataset.from_list(data)
+    records = load_jsonl(file_path)
+    rows = []
+    for index, record in enumerate(records):
+        canonical = to_canonical_sample(record, sample_id=f"sample_{index:06d}")
+        rows.append(
+            {
+                "id": canonical.get("id") or f"sample_{index:06d}",
+                "messages": canonical_to_messages(canonical),
+                "image_path": canonical.get("image", {}).get("path"),
+                "question": canonical.get("task", {}).get("question", ""),
+                "answer_text": canonical.get("answer", {}).get("text", ""),
+            }
+        )
+    return Dataset.from_list(rows)
 
 
 def load_jsonl(file_path: str) -> List[Dict]:
     """Load JSONL file as list of dicts."""
-    data = []
-    with open(file_path, 'r') as f:
-        for line in f:
-            if line.strip():
-                data.append(json.loads(line))
-    return data
+    return load_jsonl_records(file_path)
 
 
 def extract_text_tokenizer(tokenizer):
@@ -129,7 +131,8 @@ def prepare_text_only_dataset(
 
     for i, sample in enumerate(tqdm(data, desc="Tokenizing")):
         try:
-            messages = sample.get("messages", [])
+            canonical = to_canonical_sample(sample, sample_id=f"sample_{i:06d}")
+            messages = canonical_to_messages(canonical)
 
             # Convert to plain text format
             text = convert_messages_to_text(messages)
@@ -149,6 +152,7 @@ def prepare_text_only_dataset(
 
             # Add labels (same as input_ids for causal LM)
             processed.append({
+                "id": canonical.get("id") or f"sample_{i:06d}",
                 "input_ids": encoding["input_ids"],
                 "attention_mask": encoding["attention_mask"],
                 "labels": encoding["input_ids"].copy(),
@@ -190,15 +194,49 @@ def format_for_unsloth(sample: Dict[str, Any], tokenizer) -> Dict[str, Any]:
 def prepare_dataset(
     dataset: Dataset,
     tokenizer,
-    max_seq_length: int = 2048
+    dataset_file: Optional[str] = None,
+    repo_root: Optional[str] = None,
 ) -> Dataset:
     """
-    Prepare dataset for training by formatting samples.
-    """
-    def process_sample(sample):
-        return format_for_unsloth(sample, tokenizer)
+    Prepare a multimodal dataset for training.
 
-    return dataset.map(process_sample, num_proc=1)
+    The returned dataset preserves messages and resolved image paths so the
+    training collator can load images at batch time.
+    """
+    processed_rows = []
+    for index, sample in enumerate(dataset):
+        canonical = to_canonical_sample(sample, sample_id=f"sample_{index:06d}")
+        errors, warnings = validate_canonical_sample(
+            canonical,
+            dataset_file=dataset_file,
+            repo_root=repo_root,
+            require_image=True,
+            require_boxes=False,
+        )
+        if errors:
+            raise ValueError(
+                f"Invalid training sample '{canonical.get('id') or index}': " + "; ".join(errors)
+            )
+        if warnings:
+            print("Warning:", "; ".join(warnings))
+
+        resolved_image_path = resolve_image_path(
+            canonical.get("image", {}).get("path"),
+            dataset_file=dataset_file,
+            repo_root=repo_root,
+        )
+        messages = canonical_to_messages(canonical)
+        processed_rows.append(
+            {
+                "id": canonical.get("id") or f"sample_{index:06d}",
+                "messages": messages,
+                "image_path": resolved_image_path,
+                "question": canonical.get("task", {}).get("question", ""),
+                "answer_text": canonical.get("answer", {}).get("text", ""),
+            }
+        )
+
+    return Dataset.from_list(processed_rows)
 
 
 def prepare_pretokenized_dataset(
@@ -243,6 +281,12 @@ def load_image_from_path(image_path: str) -> Optional[Image.Image]:
     except Exception as e:
         print(f"Warning: Could not load image {image_path}: {e}")
         return None
+
+
+def create_multimodal_dataset(file_path: str, tokenizer, repo_root: Optional[str] = None) -> Dataset:
+    records = load_jsonl(file_path)
+    dataset = Dataset.from_list(records)
+    return prepare_dataset(dataset, tokenizer, dataset_file=file_path, repo_root=repo_root)
 
 
 def create_sample_dataset() -> Dataset:

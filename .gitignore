@@ -38,7 +38,11 @@ env/
 *.ipynb
 
 # Project specific
-data/
+data/*
+!data/processed/
+data/processed/*
+!data/processed/sample_train.jsonl
+!data/processed/sample_val.jsonl
 logs/*
 !logs/.gitkeep
 outputs/*
@@ -69,3 +73,4 @@ results/*
 # Intermediate files
 gemini_output.txt
 intermediate.jsonl
+REVIEW_IMPROVEMENT_PLAN.md

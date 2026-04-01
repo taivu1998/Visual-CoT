@@ -1,18 +1,17 @@
 #!/usr/bin/env python
 """
-V-CoT Setup Verification Script
+V-CoT setup verification.
 
-Checks that all dependencies and configurations are properly set up
-before running experiments.
+Validates the actual repo workflows instead of checking mismatched paths.
 """
-import sys
 import os
+import sys
 from pathlib import Path
 
-# Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Color codes for terminal output
+from src.runtime import detect_runtime_availability
+
 GREEN = "\033[92m"
 RED = "\033[91m"
 YELLOW = "\033[93m"
@@ -22,173 +21,132 @@ CROSS = f"{RED}✗{RESET}"
 WARN = f"{YELLOW}!{RESET}"
 
 
-def check_python_version():
-    """Check Python version."""
+def print_status(ok: bool, label: str, details: str = ""):
+    prefix = CHECK if ok else CROSS
+    suffix = f": {details}" if details else ""
+    print(f"  {prefix} {label}{suffix}")
+
+
+def print_warn(label: str, details: str = ""):
+    suffix = f": {details}" if details else ""
+    print(f"  {WARN} {label}{suffix}")
+
+
+def check_python_matrix():
     version = sys.version_info
+    if version >= (3, 10):
+        print_status(True, "Python", f"{version.major}.{version.minor}.{version.micro} (recommended for Unsloth)")
+        return True
     if version >= (3, 8):
-        print(f"  {CHECK} Python {version.major}.{version.minor}.{version.micro}")
+        print_warn("Python", f"{version.major}.{version.minor}.{version.micro} (core repo may work, Unsloth likely will not)")
         return True
-    else:
-        print(f"  {CROSS} Python {version.major}.{version.minor} (requires >= 3.8)")
-        return False
+
+    print_status(False, "Python", f"{version.major}.{version.minor} (requires >= 3.8)")
+    return False
 
 
-def check_package(name, import_name=None):
-    """Check if a package is installed."""
-    import_name = import_name or name
-    try:
-        __import__(import_name)
-        print(f"  {CHECK} {name}")
+def check_path(path: str, description: str) -> bool:
+    exists = Path(path).exists()
+    print_status(exists, description, path)
+    return exists
+
+
+def detect_dataset_status() -> bool:
+    canonical_paths = [
+        Path("data/processed/train.jsonl"),
+        Path("data/processed/val.jsonl"),
+    ]
+    sample_paths = [
+        Path("data/processed/sample_train.jsonl"),
+        Path("data/processed/sample_val.jsonl"),
+    ]
+
+    if all(path.exists() for path in canonical_paths):
+        print_status(True, "Canonical processed data", "data/processed/train.jsonl + data/processed/val.jsonl")
         return True
-    except ImportError:
-        print(f"  {CROSS} {name} (not installed)")
-        return False
-
-
-def check_cuda():
-    """Check CUDA availability."""
-    try:
-        import torch
-        if torch.cuda.is_available():
-            device_name = torch.cuda.get_device_name(0)
-            print(f"  {CHECK} CUDA available: {device_name}")
-            return True
-        else:
-            print(f"  {WARN} CUDA not available (will use CPU - very slow)")
-            return False
-    except Exception as e:
-        print(f"  {CROSS} Could not check CUDA: {e}")
-        return False
-
-
-def check_file(path, description):
-    """Check if a file exists."""
-    if Path(path).exists():
-        print(f"  {CHECK} {description}: {path}")
+    if all(path.exists() for path in sample_paths):
+        print_warn("Only sample data found", "data/processed/sample_train.jsonl + data/processed/sample_val.jsonl")
         return True
-    else:
-        print(f"  {CROSS} {description}: {path} (not found)")
-        return False
 
-
-def check_directory(path, description):
-    """Check if a directory exists."""
-    if Path(path).is_dir():
-        print(f"  {CHECK} {description}: {path}")
-        return True
-    else:
-        print(f"  {CROSS} {description}: {path} (not found)")
-        return False
-
-
-def check_env_var(name, required=False):
-    """Check if an environment variable is set."""
-    value = os.environ.get(name)
-    if value:
-        # Mask the value for security
-        masked = value[:4] + "..." + value[-4:] if len(value) > 8 else "****"
-        print(f"  {CHECK} {name}: {masked}")
-        return True
-    else:
-        if required:
-            print(f"  {CROSS} {name} (not set - required)")
-        else:
-            print(f"  {WARN} {name} (not set - optional)")
-        return not required
-
-
-def check_data_files():
-    """Check for training data files."""
-    train_path = Path("data/processed/train.jsonl")
-    val_path = Path("data/processed/val.jsonl")
-    sample_train = Path("data/processed/sample_train.jsonl")
-    sample_val = Path("data/processed/sample_val.jsonl")
-
-    has_full_data = train_path.exists() and val_path.exists()
-    has_sample_data = sample_train.exists() and sample_val.exists()
-
-    if has_full_data:
-        print(f"  {CHECK} Full training data available")
-        return True
-    elif has_sample_data:
-        print(f"  {WARN} Only sample data available (run 'make generate' for full data)")
-        return True
-    else:
-        print(f"  {CROSS} No training data found")
-        return False
+    print_status(False, "Processed data", "missing canonical or sample processed datasets")
+    return False
 
 
 def main():
-    """Run all verification checks."""
+    availability = detect_runtime_availability()
+
     print("\n" + "=" * 60)
     print("V-CoT Setup Verification")
     print("=" * 60)
 
     all_passed = True
 
-    # Python version
-    print("\n[1/6] Python Environment:")
-    all_passed &= check_python_version()
+    print("\n[1/6] Python:")
+    all_passed &= check_python_matrix()
 
-    # Core packages
-    print("\n[2/6] Core Dependencies:")
-    core_packages = [
-        ("torch", "torch"),
-        ("transformers", "transformers"),
-        ("datasets", "datasets"),
-        ("peft", "peft"),
-        ("trl", "trl"),
-        ("accelerate", "accelerate"),
-        ("pyyaml", "yaml"),
-    ]
-    for name, import_name in core_packages:
-        all_passed &= check_package(name, import_name)
+    print("\n[2/6] Canonical Paths:")
+    all_passed &= check_path("configs/default.yaml", "Default config")
+    check_path("configs/test.yaml", "Test config")
+    detect_dataset_status()
 
-    # Optional packages
-    print("\n[3/6] Optional Dependencies:")
-    optional_packages = [
-        ("unsloth", "unsloth"),
-        ("bitsandbytes", "bitsandbytes"),
-        ("gradio", "gradio"),
-        ("openai", "openai"),
-        ("opencv-python", "cv2"),
-    ]
-    for name, import_name in optional_packages:
-        check_package(name, import_name)  # Don't fail on optional
+    print("\n[3/6] Core Dependencies:")
+    core_checks = {
+        "torch": availability.torch,
+        "transformers": availability.transformers,
+        "datasets": availability.datasets,
+        "peft": availability.peft,
+        "accelerate": availability.accelerate,
+    }
+    for name, ok in core_checks.items():
+        all_passed &= ok
+        print_status(ok, name)
 
-    # CUDA
-    print("\n[4/6] GPU Support:")
-    check_cuda()  # Warning only, don't fail
+    print("\n[4/6] Optional Workflow Dependencies:")
+    print_status(availability.bitsandbytes, "bitsandbytes 4-bit loading")
+    print_status(availability.unsloth, "Unsloth backend")
+    print_status(availability.gradio, "Gradio demo")
+    print_status(availability.qwen_vl_utils, "qwen_vl_utils preprocessing")
+    print_status(availability.openai, "OpenAI ScienceQA generation")
 
-    # Configuration files
-    print("\n[5/6] Configuration Files:")
-    all_passed &= check_file("configs/default.yaml", "Default config")
-    check_file("configs/test.yaml", "Test config")  # Optional
+    print("\n[5/6] Workflow Readiness:")
+    training_ready = all([availability.torch, availability.transformers, availability.peft, availability.accelerate])
+    inference_ready = all([availability.torch, availability.transformers])
+    demo_ready = inference_ready and availability.gradio
+    generation_ready = availability.datasets
+    scienceqa_ready = generation_ready and availability.openai and bool(os.environ.get("OPENAI_API_KEY"))
 
-    # Data
-    print("\n[6/6] Training Data:")
-    check_data_files()
+    print_status(training_ready, "Training", "core training stack")
+    print_status(inference_ready, "Inference", "single-image and evaluation stack")
+    if inference_ready and not availability.bitsandbytes:
+        print_warn("Inference quantization", "bitsandbytes is not installed, so transformer inference will use non-4-bit loading")
+    print_status(demo_ready, "Demo", "Gradio + inference stack")
+    print_status(generation_ready, "VisCOT generation", "datasets package available")
+    print_status(scienceqa_ready, "ScienceQA generation", "OpenAI package + OPENAI_API_KEY")
 
-    # Environment variables
-    print("\n[Optional] Environment Variables:")
-    check_env_var("OPENAI_API_KEY")
-    check_env_var("WANDB_API_KEY")
-    check_env_var("HF_TOKEN")
+    print("\n[6/6] Environment Variables:")
+    if os.environ.get("OPENAI_API_KEY"):
+        print_status(True, "OPENAI_API_KEY", "set")
+    else:
+        print_warn("OPENAI_API_KEY", "not set")
+    if os.environ.get("WANDB_API_KEY"):
+        print_status(True, "WANDB_API_KEY", "set")
+    else:
+        print_warn("WANDB_API_KEY", "not set")
+    if os.environ.get("HF_TOKEN"):
+        print_status(True, "HF_TOKEN", "set")
+    else:
+        print_warn("HF_TOKEN", "not set")
 
-    # Summary
     print("\n" + "=" * 60)
     if all_passed:
-        print(f"{GREEN}Setup verification PASSED{RESET}")
-        print("\nNext steps:")
-        print("  1. Install remaining dependencies: make install")
-        print("  2. Generate training data: make generate")
-        print("  3. Train the model: make train")
-        print("  4. Launch demo: make demo")
+        print(f"{GREEN}Core setup checks passed{RESET}")
+        print("Recommended next steps:")
+        print("  1. python scripts/validate_data.py --input data/processed/sample_train.jsonl --allow-missing-images")
+        print("  2. python scripts/train.py --config configs/test.yaml --mode text_only_debug")
+        print("  3. python scripts/train.py --config configs/default.yaml --mode multimodal")
     else:
-        print(f"{RED}Setup verification FAILED{RESET}")
-        print("\nPlease fix the issues above before proceeding.")
-        print("Run 'make install' to install missing dependencies.")
-
+        print(f"{RED}Core setup checks failed{RESET}")
+        print("Install the missing dependencies and re-run this script.")
     print("=" * 60 + "\n")
 
     return 0 if all_passed else 1

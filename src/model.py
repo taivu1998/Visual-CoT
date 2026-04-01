@@ -4,7 +4,9 @@ Model Factory.
 Supports both Unsloth (optimized, requires Python 3.10+ and CUDA)
 and standard transformers (fallback).
 """
-from typing import Tuple, Any, Optional
+import json
+import os
+from typing import Tuple, Any
 import warnings
 
 # Check if Unsloth is available
@@ -17,6 +19,77 @@ except ImportError:
         "Unsloth not available. Using standard transformers. "
         "For optimal performance, use Python 3.10+ with CUDA and install Unsloth."
     )
+
+
+def _normalize_model_id(model_id: str) -> str:
+    if "unsloth/" in model_id:
+        return model_id.replace("unsloth/", "Qwen/").replace("-bnb-4bit", "")
+    return model_id
+
+
+def _has_dependency(module_name: str) -> bool:
+    try:
+        __import__(module_name)
+        return True
+    except Exception:
+        return False
+
+
+def _build_quantization_config(enable_4bit: bool = True):
+    if not enable_4bit:
+        return None
+
+    if not _has_dependency("bitsandbytes"):
+        return None
+
+    import torch
+    from transformers import BitsAndBytesConfig
+
+    return BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_use_double_quant=True,
+    )
+
+
+def _load_processor(model_path: str, fallback_model_id: str):
+    from transformers import AutoProcessor
+
+    processor_source = model_path if os.path.exists(model_path) else fallback_model_id
+    try:
+        return AutoProcessor.from_pretrained(processor_source, trust_remote_code=True)
+    except Exception:
+        return AutoProcessor.from_pretrained(fallback_model_id, trust_remote_code=True)
+
+
+def _read_adapter_base_model(adapter_dir: str) -> str:
+    adapter_config_path = os.path.join(adapter_dir, "adapter_config.json")
+    with open(adapter_config_path, "r", encoding="utf-8") as handle:
+        adapter_config = json.load(handle)
+    base_model_name = adapter_config.get("base_model_name_or_path")
+    if not base_model_name:
+        raise ValueError(f"adapter_config.json in '{adapter_dir}' does not include base_model_name_or_path")
+    return _normalize_model_id(base_model_name)
+
+
+def _load_peft_inference_model(model_path: str):
+    from peft import PeftModel
+    from transformers import AutoModelForVision2Seq
+
+    base_model_id = _read_adapter_base_model(model_path)
+    quantization_config = _build_quantization_config(enable_4bit=True)
+
+    base_model = AutoModelForVision2Seq.from_pretrained(
+        base_model_id,
+        quantization_config=quantization_config,
+        device_map="auto",
+        trust_remote_code=True,
+    )
+    model = PeftModel.from_pretrained(base_model, model_path)
+    processor = _load_processor(model_path, base_model_id)
+    model.eval()
+    return model, processor, "transformers-peft"
 
 
 def load_model_unsloth(config: dict) -> Tuple[Any, Any]:
@@ -54,20 +127,10 @@ def load_model_transformers(config: dict) -> Tuple[Any, Any]:
     lora_cfg = config["lora"]
 
     # Use a compatible model ID for transformers
-    model_id = model_cfg["base_model_id"]
-    if "unsloth" in model_id:
-        # Convert unsloth model ID to standard HF model ID
-        model_id = model_id.replace("unsloth/", "Qwen/").replace("-bnb-4bit", "")
+    model_id = _normalize_model_id(model_cfg["base_model_id"])
 
     # Quantization config
-    bnb_config = None
-    if model_cfg.get("load_in_4bit", True):
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_use_double_quant=True,
-        )
+    bnb_config = _build_quantization_config(enable_4bit=model_cfg.get("load_in_4bit", True))
 
     # Load model and processor
     model = AutoModelForVision2Seq.from_pretrained(
@@ -118,3 +181,38 @@ def load_model(config: dict, force_transformers: bool = False) -> Tuple[Any, Any
     else:
         print("Loading model with transformers + PEFT (fallback)...")
         return load_model_transformers(config)
+
+
+def load_model_for_inference(model_path: str, prefer_unsloth: bool = True) -> Tuple[Any, Any, str]:
+    """
+    Load a trained checkpoint or Hugging Face model for inference.
+    """
+    from transformers import AutoModelForVision2Seq
+
+    if prefer_unsloth and UNSLOTH_AVAILABLE:
+        from unsloth import FastVisionModel
+
+        model, processor = FastVisionModel.from_pretrained(model_path, load_in_4bit=True)
+        FastVisionModel.for_inference(model)
+        return model, processor, "unsloth"
+
+    if os.path.isdir(model_path) and os.path.exists(os.path.join(model_path, "adapter_config.json")):
+        if not _has_dependency("peft"):
+            raise RuntimeError(
+                f"Inference checkpoint '{model_path}' is a PEFT adapter checkpoint, but 'peft' is not installed."
+            )
+        return _load_peft_inference_model(model_path)
+
+    model_id = _normalize_model_id(model_path)
+    quantization_config = _build_quantization_config(enable_4bit=True)
+
+    model = AutoModelForVision2Seq.from_pretrained(
+        model_id,
+        quantization_config=quantization_config,
+        device_map="auto",
+        trust_remote_code=True,
+    )
+    processor = _load_processor(model_path, model_id)
+    model.eval()
+    backend_name = "transformers-4bit" if quantization_config is not None else "transformers"
+    return model, processor, backend_name

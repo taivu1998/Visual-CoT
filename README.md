@@ -4,7 +4,7 @@
 
 **Grounding Reasoning in Vision-Language Models**
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Hugging Face](https://img.shields.io/badge/HuggingFace-Transformers-yellow.svg)](https://huggingface.co/)
@@ -119,7 +119,7 @@ The model:
 
 - **GPU**: NVIDIA with 16GB+ VRAM (A100/H100 recommended for full training)
 - **CUDA**: 12.1+
-- **Python**: 3.10+
+- **Python**: 3.8+ for core tooling, 3.10+ recommended for Unsloth training
 
 ### Installation
 
@@ -161,7 +161,7 @@ Download and convert the VisCOT dataset with 150K+ samples containing real bound
 ```bash
 python scripts/generate_data.py \
     --source viscot \
-    --output_dir data \
+    --output_dir data/processed \
     --max_samples 150000
 ```
 
@@ -174,7 +174,7 @@ export OPENAI_API_KEY="your-key-here"
 
 python scripts/generate_data.py \
     --source scienceqa \
-    --output_dir data \
+    --output_dir data/processed \
     --max_samples 2000 \
     --save_images
 ```
@@ -188,8 +188,8 @@ python scripts/train.py --config configs/default.yaml
 # Resume from checkpoint
 python scripts/train.py --config configs/default.yaml --resume
 
-# Use traditional approach (if pre-tokenization causes issues)
-python scripts/train.py --config configs/default.yaml --no_pretokenized
+# Lightweight smoke test path
+python scripts/train.py --config configs/test.yaml --mode text_only_debug
 ```
 
 #### Training Configuration
@@ -218,7 +218,7 @@ python scripts/inference.py \
 # Batch evaluation with IoU metrics
 python scripts/inference.py \
     --model_path outputs/checkpoints \
-    --eval_jsonl data/val.jsonl \
+    --eval_jsonl data/processed/val.jsonl \
     --output_json results/evaluation.json
 ```
 
@@ -253,11 +253,11 @@ Visual-CoT/
 ├── configs/
 │   └── default.yaml          # Training hyperparameters (optimized)
 ├── data/
-│   ├── train.jsonl           # Training data
-│   └── val.jsonl             # Validation data
+│   ├── processed/            # Canonical processed JSONL files
+│   └── images/               # Portable image assets for generated datasets
 ├── src/
 │   ├── config_parser.py      # YAML + CLI config parsing
-│   ├── dataset.py            # Data loading, pre-tokenization
+│   ├── dataset.py            # Data loading, schema adaptation, training preparation
 │   ├── model.py              # Model factory (Unsloth/Transformers)
 │   ├── trainer.py            # VCoTTrainer with NEFTune, early stopping
 │   └── utils.py              # IoU metrics, visualization, logging
@@ -359,8 +359,8 @@ python scripts/train.py --training.gradient_accumulation_steps 8
 ```
 
 **Slow Training**
-- Ensure you have `unsloth` installed (2x speedup)
-- Use `--pretokenized` flag (default) for faster data loading
+- Ensure you have `unsloth` installed for the optimized backend
+- Use `--mode text_only_debug` only for smoke tests, not real multimodal training
 - Enable gradient checkpointing (enabled by default)
 
 **Missing qwen_vl_utils**

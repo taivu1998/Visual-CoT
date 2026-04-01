@@ -4,7 +4,7 @@
 project:
   name: "vcot-qwen2.5-vl"
   seed: 42
-  report_to: "tensorboard" # or "wandb"
+  report_to: "none" # set to "tensorboard" or "wandb" if configured
 
 model:
   base_model_id: "unsloth/Qwen2.5-VL-7B-Instruct-bnb-4bit"
@@ -26,8 +26,8 @@ lora:
     - "down_proj"
 
 data:
-  train_path: "data/train.jsonl"
-  val_path: "data/val.jsonl"
+  train_path: "data/processed/train.jsonl"
+  val_path: "data/processed/val.jsonl"
 
 training:
   output_dir: "outputs/checkpoints"

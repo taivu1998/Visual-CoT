@@ -4,7 +4,7 @@
 project:
   name: "vcot-test"
   seed: 42
-  report_to: "tensorboard"
+  report_to: "none"
 
 model:
   base_model_id: "unsloth/Qwen2.5-VL-7B-Instruct-bnb-4bit"
